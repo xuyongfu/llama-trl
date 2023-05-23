@@ -144,7 +144,7 @@ rw_kwargs = {
     "truncation": True
 }
 
-if "decapoda" in script_args.model_name.lower():
+if "llama" in script_args.model_name.lower():
     tokenizer = LlamaTokenizer.from_pretrained(script_args.model_name)
     # required for llama
     tokenizer.add_special_tokens(

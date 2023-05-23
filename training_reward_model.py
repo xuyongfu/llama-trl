@@ -59,7 +59,7 @@ class ScriptArguments:
         },
     )
     dataset_name: Optional[str] = field(
-        default="./data/comparison_data_v2.json",
+        default="./data/comparison_data.json",
         metadata={"help": "The dataset name"},
     )
     bf16: Optional[bool] = field(
@@ -173,6 +173,10 @@ def preprocess_function(examples):
     return new_examples
 
 
+# Define the metric that we'll use for validation.
+accuracy = evaluate.load("accuracy")
+
+
 def compute_metrics(eval_pred):
     predictions, _ = eval_pred
     # Here, predictions is rewards_j and rewards_k.
@@ -221,9 +225,9 @@ training_args = TrainingArguments(
     num_train_epochs=script_args.num_train_epochs,
     weight_decay=script_args.weight_decay,
     evaluation_strategy="steps",
-    eval_steps=500,
+    eval_steps=32,
     save_strategy="steps",
-    save_steps=500,
+    save_steps=32,
     gradient_accumulation_steps=script_args.gradient_accumulation_steps,
     gradient_checkpointing=script_args.gradient_checkpointing,
     deepspeed=script_args.deepspeed,
@@ -232,29 +236,12 @@ training_args = TrainingArguments(
     label_names=[],
     bf16=script_args.bf16,
     logging_strategy="steps",
-    logging_steps=10,
+    logging_steps=8,
     optim=script_args.optim,
     lr_scheduler_type=script_args.lr_scheduler_type,
 )
 
 # Load the value-head model and tokenizer.
-config = AutoConfig.from_pretrained(script_args.model_name)
-if "decapoda" in script_args.model_name.lower():
-    tokenizer = LlamaTokenizer.from_pretrained(script_args.model_name)
-    # required for llama
-    tokenizer.add_special_tokens(
-        {
-            "eos_token": DEFAULT_EOS_TOKEN,
-            "bos_token": DEFAULT_BOS_TOKEN,
-            "unk_token": DEFAULT_UNK_TOKEN,
-            "pad_token": DEFAULT_PAD_TOKEN,
-        }
-    )
-else:
-    tokenizer = AutoTokenizer.from_pretrained(script_args.model_name)
-    if getattr(tokenizer, "pad_token", None) is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
 peft_config = LoraConfig(
     task_type=TaskType.SEQ_CLS,
     inference_mode=False,
@@ -268,6 +255,25 @@ model = AutoModelForSequenceClassification.from_pretrained(
 )
 model = get_peft_model(model, peft_config)
 model.print_trainable_parameters()
+
+config = AutoConfig.from_pretrained(script_args.model_name)
+if "llama" in script_args.model_name.lower():
+    tokenizer = LlamaTokenizer.from_pretrained(script_args.model_name, use_auth_token=True)
+    # required for llama
+    tokenizer.add_special_tokens(
+        {
+            "eos_token": DEFAULT_EOS_TOKEN,
+            "bos_token": DEFAULT_BOS_TOKEN,
+            "unk_token": DEFAULT_UNK_TOKEN,
+            "pad_token": DEFAULT_PAD_TOKEN,
+        }
+    )
+else:
+    tokenizer = AutoTokenizer.from_pretrained(script_args.model_name, use_auth_token=True)
+    # if getattr(tokenizer, "pad_token", None) is None:
+    # Need to do this for gpt2, because it doesn't have an official pad token.
+    tokenizer.pad_token = tokenizer.eos_token
+    model.config.pad_token_id = tokenizer.eos_token_id
 
 model.config.use_cache = script_args.gradient_checkpointing
 num_proc = 24  # Can adjust to be higher if you have more processors.
@@ -283,9 +289,6 @@ train_dataset = train_dataset.filter(
 eval_dataset = eval_dataset.map(preprocess_function, batched=True, num_proc=num_proc, remove_columns=original_columns)
 eval_dataset = eval_dataset.filter(
     lambda x: len(x["input_ids_j"]) <= script_args.max_length and len(x["input_ids_k"]) <= script_args.max_length)
-
-# Define the metric that we'll use for validation.
-accuracy = evaluate.load("accuracy")
 
 # Train the model
 trainer = RewardTrainer(
